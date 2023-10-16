@@ -205,12 +205,13 @@ def eval_model_iou(version,
                    dataroot='/data/nuscenes',
                    gpuid=1,
 
-                   H=900, W=1600,
-                   resize_lim=(0.193, 0.225),
-                   final_dim=(128, 352),
-                   bot_pct_lim=(0.0, 0.22),
-                   rot_lim=(-5.4, 5.4),
-                   rand_flip=True,
+                   H=900, W=1600,  # 图像高度和宽度
+                   # 数据增强的参数
+                   resize_lim=(0.193, 0.225),  # resize范围
+                   final_dim=(128, 352),  # 最终的图像大小
+                   bot_pct_lim=(0.0, 0.22),  # 剪裁图像时，底部所占比例的范围
+                   rot_lim=(-5.4, 5.4),  # 旋转角度的范围
+                   rand_flip=True,  # 是否随机翻转
 
                    xbound=[-50.0, 50.0, 0.5],
                    ybound=[-50.0, 50.0, 0.5],
@@ -220,13 +221,13 @@ def eval_model_iou(version,
                    bsz=4,
                    nworkers=10,
                    ):
-    grid_conf = {
+    grid_conf = {  # 网格配置
         'xbound': xbound,
         'ybound': ybound,
         'zbound': zbound,
         'dbound': dbound,
     }
-    data_aug_conf = {
+    data_aug_conf = {  # 数据增强配置
         'resize_lim': resize_lim,
         'final_dim': final_dim,
         'rot_lim': rot_lim,
@@ -235,25 +236,25 @@ def eval_model_iou(version,
         'bot_pct_lim': bot_pct_lim,
         'cams': ['CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT',
                  'CAM_BACK_LEFT', 'CAM_BACK', 'CAM_BACK_RIGHT'],
-        'Ncams': 5,
+        'Ncams': 5,  # （0-5）相机数据
     }
     trainloader, valloader = compile_data(version, dataroot, data_aug_conf=data_aug_conf,
                                           grid_conf=grid_conf, bsz=bsz, nworkers=nworkers,
-                                          parser_name='segmentationdata')
+                                          parser_name='segmentationdata')  # 生成训练集和验证集 data.py
 
     device = torch.device(
         'cpu') if gpuid < 0 else torch.device(f'cuda:{gpuid}')
 
-    model = compile_model(grid_conf, data_aug_conf, outC=1)
+    model = compile_model(grid_conf, data_aug_conf, outC=1)  # 构造LSS模型 model.py
     print('loading', modelf)
-    model.load_state_dict(torch.load(modelf), False)
+    model.load_state_dict(torch.load(modelf), False)  # 加载无结构模型参数字典
     model.to(device)
 
-    loss_fn = SimpleLoss(1.0).cuda(gpuid)
+    loss_fn = SimpleLoss(1.0).cuda(gpuid)  # 损失计算 tool.py
 
     model.eval()
-    val_info = get_val_info(model, valloader, loss_fn, device)
-    print(val_info)
+    val_info = get_val_info(model, valloader, loss_fn, device)  # 评估
+    print(val_info)  # 打印
 
 
 def viz_model_preds(version,

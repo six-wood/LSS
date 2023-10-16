@@ -18,3 +18,4 @@ if __name__ == '__main__':
         'eval_model_iou': src.explore.eval_model_iou,
         'viz_model_preds': src.explore.viz_model_preds,
     })
+    # 通过fire库，可以在命令行中直接调用函数，而不需要在命令行中输入

@@ -4,6 +4,10 @@ Licensed under the NVIDIA Source Code License. See LICENSE at https://github.com
 Authors: Jonah Philion and Sanja Fidler
 """
 
+from nuscenes.map_expansion.map_api import NuScenesMap
+from nuscenes.utils.geometry_utils import transform_matrix
+from nuscenes.utils.data_classes import LidarPointCloud
+import matplotlib.pyplot as plt
 import os
 import numpy as np
 import torch
@@ -14,10 +18,6 @@ from PIL import Image
 from functools import reduce
 import matplotlib as mpl
 mpl.use('Agg')
-import matplotlib.pyplot as plt
-from nuscenes.utils.data_classes import LidarPointCloud
-from nuscenes.utils.geometry_utils import transform_matrix
-from nuscenes.map_expansion.map_api import NuScenesMap
 
 
 def get_lidar_data(nusc, sample_rec, nsweeps, min_distance):
@@ -32,33 +32,38 @@ def get_lidar_data(nusc, sample_rec, nsweeps, min_distance):
     ref_sd_token = sample_rec['data']['LIDAR_TOP']
     ref_sd_rec = nusc.get('sample_data', ref_sd_token)
     ref_pose_rec = nusc.get('ego_pose', ref_sd_rec['ego_pose_token'])
-    ref_cs_rec = nusc.get('calibrated_sensor', ref_sd_rec['calibrated_sensor_token'])
+    ref_cs_rec = nusc.get('calibrated_sensor',
+                          ref_sd_rec['calibrated_sensor_token'])
     ref_time = 1e-6 * ref_sd_rec['timestamp']
 
     # Homogeneous transformation matrix from global to _current_ ego car frame.
     car_from_global = transform_matrix(ref_pose_rec['translation'], Quaternion(ref_pose_rec['rotation']),
-                                        inverse=True)
+                                       inverse=True)
 
     # Aggregate current and previous sweeps.
     sample_data_token = sample_rec['data']['LIDAR_TOP']
     current_sd_rec = nusc.get('sample_data', sample_data_token)
     for _ in range(nsweeps):
         # Load up the pointcloud and remove points close to the sensor.
-        current_pc = LidarPointCloud.from_file(os.path.join(nusc.dataroot, current_sd_rec['filename']))
+        current_pc = LidarPointCloud.from_file(
+            os.path.join(nusc.dataroot, current_sd_rec['filename']))
         current_pc.remove_close(min_distance)
 
         # Get past pose.
-        current_pose_rec = nusc.get('ego_pose', current_sd_rec['ego_pose_token'])
+        current_pose_rec = nusc.get(
+            'ego_pose', current_sd_rec['ego_pose_token'])
         global_from_car = transform_matrix(current_pose_rec['translation'],
-                                            Quaternion(current_pose_rec['rotation']), inverse=False)
+                                           Quaternion(current_pose_rec['rotation']), inverse=False)
 
         # Homogeneous transformation matrix from sensor coordinate frame to ego car frame.
-        current_cs_rec = nusc.get('calibrated_sensor', current_sd_rec['calibrated_sensor_token'])
+        current_cs_rec = nusc.get(
+            'calibrated_sensor', current_sd_rec['calibrated_sensor_token'])
         car_from_current = transform_matrix(current_cs_rec['translation'], Quaternion(current_cs_rec['rotation']),
                                             inverse=False)
 
         # Fuse four transformation matrices into one and perform transform.
-        trans_matrix = reduce(np.dot, [car_from_global, global_from_car, car_from_current])
+        trans_matrix = reduce(
+            np.dot, [car_from_global, global_from_car, car_from_current])
         current_pc.transform(trans_matrix)
 
         # Add time vector which can be used as a temporal feature.
@@ -119,7 +124,7 @@ def get_rot(h):
 
 def img_transform(img, post_rot, post_tran,
                   resize, resize_dims, crop,
-                  flip, rotate):
+                  flip, rotate):  # 图像变换
     # adjust image
     img = img.resize(resize_dims)
     img = img.crop(crop)
@@ -128,6 +133,7 @@ def img_transform(img, post_rot, post_tran,
     img = img.rotate(rotate)
 
     # post-homography transformation
+    # 单映变换矩阵
     post_rot *= resize
     post_tran -= torch.Tensor(crop[:2])
     if flip:
@@ -158,23 +164,25 @@ class NormalizeInverse(torchvision.transforms.Normalize):
 
 
 denormalize_img = torchvision.transforms.Compose((
-            NormalizeInverse(mean=[0.485, 0.456, 0.406],
-                             std=[0.229, 0.224, 0.225]),
-            torchvision.transforms.ToPILImage(),
-        ))
-
-
-normalize_img = torchvision.transforms.Compose((
-                torchvision.transforms.ToTensor(),
-                torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                 std=[0.229, 0.224, 0.225]),
+    NormalizeInverse(mean=[0.485, 0.456, 0.406],
+                     std=[0.229, 0.224, 0.225]),
+    torchvision.transforms.ToPILImage(),
 ))
 
 
-def gen_dx_bx(xbound, ybound, zbound):
-    dx = torch.Tensor([row[2] for row in [xbound, ybound, zbound]])
-    bx = torch.Tensor([row[0] + row[2]/2.0 for row in [xbound, ybound, zbound]])
-    nx = torch.LongTensor([(row[1] - row[0]) / row[2] for row in [xbound, ybound, zbound]])
+normalize_img = torchvision.transforms.Compose((  # 固定的标准化
+    torchvision.transforms.ToTensor(),
+    torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                     std=[0.229, 0.224, 0.225]),
+))
+
+
+def gen_dx_bx(xbound, ybound, zbound):  # 计算网格参数
+    dx = torch.Tensor([row[2] for row in [xbound, ybound, zbound]])  # size
+    bx = torch.Tensor(
+        [row[0] + row[2]/2.0 for row in [xbound, ybound, zbound]])  # first
+    nx = torch.LongTensor([(row[1] - row[0]) / row[2]
+                          for row in [xbound, ybound, zbound]])  # number
 
     return dx, bx, nx
 
@@ -190,14 +198,16 @@ def cumsum_trick(x, geom_feats, ranks):
     return x, geom_feats
 
 
-class QuickCumsum(torch.autograd.Function):
+class QuickCumsum(torch.autograd.Function):  # 用于快速计算相同标志位的累加和
     @staticmethod
     def forward(ctx, x, geom_feats, ranks):
+        # x: 168648 x 64  geom_feats: 168648 x 4  ranks: 168648 x
         x = x.cumsum(0)
         kept = torch.ones(x.shape[0], device=x.device, dtype=torch.bool)
-        kept[:-1] = (ranks[1:] != ranks[:-1])
+        kept[:-1] = (ranks[1:] != ranks[:-1])  # 筛选出ranks中前后rank值不相等的位置
 
         x, geom_feats = x[kept], geom_feats[kept]
+        # rank值相等的点只留下最后一个，即一个batch中的一个格子里只留最后一个点 x: 29072  geom_feats: 29072 x 4
         x = torch.cat((x[:1], x[1:] - x[:-1]))
 
         # save kept for backward
@@ -222,7 +232,9 @@ class QuickCumsum(torch.autograd.Function):
 class SimpleLoss(torch.nn.Module):
     def __init__(self, pos_weight):
         super(SimpleLoss, self).__init__()
-        self.loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.Tensor([pos_weight]))
+        self.loss_fn = torch.nn.BCEWithLogitsLoss(
+            pos_weight=torch.Tensor([pos_weight]))
+        # sigmoid+二值交叉熵损失, pos_weight是给正样本乘的权重系数，防止正样本过少，用于平衡precision和recall。
 
     def forward(self, ypred, ytgt):
         loss = self.loss_fn(ypred, ytgt)
@@ -251,7 +263,8 @@ def get_val_info(model, valloader, loss_fn, device, use_tqdm=False):
         for batch in loader:
             allimgs, rots, trans, intrins, post_rots, post_trans, binimgs = batch
             preds = model(allimgs.to(device), rots.to(device),
-                          trans.to(device), intrins.to(device), post_rots.to(device),
+                          trans.to(device), intrins.to(
+                              device), post_rots.to(device),
                           post_trans.to(device))
             binimgs = binimgs.to(device)
 
@@ -265,9 +278,9 @@ def get_val_info(model, valloader, loss_fn, device, use_tqdm=False):
 
     model.train()
     return {
-            'loss': total_loss / len(valloader.dataset),
-            'iou': total_intersect / total_union,
-            }
+        'loss': total_loss / len(valloader.dataset),
+        'iou': total_intersect / total_union,
+    }
 
 
 def add_ego(bx, dx):
@@ -280,28 +293,30 @@ def add_ego(bx, dx):
         [-4.084/2.+0.5, -W/2.],
     ])
     pts = (pts - bx) / dx
-    pts[:, [0,1]] = pts[:, [1,0]]
+    pts[:, [0, 1]] = pts[:, [1, 0]]
     plt.fill(pts[:, 0], pts[:, 1], '#76b900')
 
 
 def get_nusc_maps(map_folder):
     nusc_maps = {map_name: NuScenesMap(dataroot=map_folder,
-                map_name=map_name) for map_name in [
-                    "singapore-hollandvillage", 
-                    "singapore-queenstown",
-                    "boston-seaport",
-                    "singapore-onenorth",
-                ]}
+                                       map_name=map_name) for map_name in [
+        "singapore-hollandvillage",
+        "singapore-queenstown",
+        "boston-seaport",
+        "singapore-onenorth",
+    ]}
     return nusc_maps
 
 
 def plot_nusc_map(rec, nusc_maps, nusc, scene2map, dx, bx):
-    egopose = nusc.get('ego_pose', nusc.get('sample_data', rec['data']['LIDAR_TOP'])['ego_pose_token'])
+    egopose = nusc.get('ego_pose', nusc.get(
+        'sample_data', rec['data']['LIDAR_TOP'])['ego_pose_token'])
     map_name = scene2map[nusc.get('scene', rec['scene_token'])['name']]
 
     rot = Quaternion(egopose['rotation']).rotation_matrix
     rot = np.arctan2(rot[1, 0], rot[0, 0])
-    center = np.array([egopose['translation'][0], egopose['translation'][1], np.cos(rot), np.sin(rot)])
+    center = np.array([egopose['translation'][0],
+                      egopose['translation'][1], np.cos(rot), np.sin(rot)])
 
     poly_names = ['road_segment', 'lane']
     line_names = ['road_divider', 'lane_divider']
@@ -360,7 +375,7 @@ def get_local_map(nmap, center, stretch, layer_names, line_names):
 
             polys[layer_name].append(
                 np.array([xs, ys]).T
-                )
+            )
 
     # convert to local coordinates in place
     rot = get_rot(np.arctan2(center[3], center[2])).T

@@ -15,32 +15,32 @@ from .data import compile_data
 from .tools import SimpleLoss, get_batch_iou, get_val_info
 
 
-def train(version,
-            dataroot='/data/nuscenes',
-            nepochs=10000,
-            gpuid=1,
+def train(version,  # mini or full
+          dataroot='/data/nuscenes',
+          nepochs=10000,  # epoch
+          gpuid=1,
 
-            H=900, W=1600,
-            resize_lim=(0.193, 0.225),
-            final_dim=(128, 352),
-            bot_pct_lim=(0.0, 0.22),
-            rot_lim=(-5.4, 5.4),
-            rand_flip=True,
-            ncams=5,
-            max_grad_norm=5.0,
-            pos_weight=2.13,
-            logdir='./runs',
+          H=900, W=1600,
+          resize_lim=(0.193, 0.225),
+          final_dim=(128, 352),
+          bot_pct_lim=(0.0, 0.22),
+          rot_lim=(-5.4, 5.4),
+          rand_flip=True,
+          ncams=6,
+          max_grad_norm=5.0,  # 梯度裁剪
+          pos_weight=2.13,  # 正样本的权重
+          logdir='./runs',
 
-            xbound=[-50.0, 50.0, 0.5],
-            ybound=[-50.0, 50.0, 0.5],
-            zbound=[-10.0, 10.0, 20.0],
-            dbound=[4.0, 45.0, 1.0],
+          xbound=[-50.0, 50.0, 0.5],
+          ybound=[-50.0, 50.0, 0.5],
+          zbound=[-10.0, 10.0, 20.0],
+          dbound=[4.0, 45.0, 1.0],
 
-            bsz=4,
-            nworkers=10,
-            lr=1e-3,
-            weight_decay=1e-7,
-            ):
+          bsz=4,
+          nworkers=10,
+          lr=1e-3,
+          weight_decay=1e-7,
+          ):
     grid_conf = {
         'xbound': xbound,
         'ybound': ybound,
@@ -48,71 +48,84 @@ def train(version,
         'dbound': dbound,
     }
     data_aug_conf = {
-                    'resize_lim': resize_lim,
-                    'final_dim': final_dim,
-                    'rot_lim': rot_lim,
-                    'H': H, 'W': W,
-                    'rand_flip': rand_flip,
-                    'bot_pct_lim': bot_pct_lim,
-                    'cams': ['CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT',
-                             'CAM_BACK_LEFT', 'CAM_BACK', 'CAM_BACK_RIGHT'],
-                    'Ncams': ncams,
-                }
+        'resize_lim': resize_lim,
+        'final_dim': final_dim,
+        'rot_lim': rot_lim,
+        'H': H, 'W': W,
+        'rand_flip': rand_flip,
+        'bot_pct_lim': bot_pct_lim,
+        'cams': ['CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT',
+                 'CAM_BACK_LEFT', 'CAM_BACK', 'CAM_BACK_RIGHT'],
+        'Ncams': ncams,
+    }
     trainloader, valloader = compile_data(version, dataroot, data_aug_conf=data_aug_conf,
                                           grid_conf=grid_conf, bsz=bsz, nworkers=nworkers,
                                           parser_name='segmentationdata')
 
-    device = torch.device('cpu') if gpuid < 0 else torch.device(f'cuda:{gpuid}')
+    device = torch.device(
+        'cpu') if gpuid < 0 else torch.device(f'cuda:{gpuid}')
 
     model = compile_model(grid_conf, data_aug_conf, outC=1)
     model.to(device)
 
-    opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    opt = torch.optim.Adam(model.parameters(), lr=lr,
+                           weight_decay=weight_decay)  # Adam优化器
 
     loss_fn = SimpleLoss(pos_weight).cuda(gpuid)
 
-    writer = SummaryWriter(logdir=logdir)
-    val_step = 1000 if version == 'mini' else 10000
+    writer = SummaryWriter(logdir=logdir)  # tensorboardX
+    val_step = 1000 if version == 'mini' else 10000  # 验证频率
 
     model.train()
     counter = 0
     for epoch in range(nepochs):
         np.random.seed()
         for batchi, (imgs, rots, trans, intrins, post_rots, post_trans, binimgs) in enumerate(trainloader):
+
+            # imgs: 4 x 5 x 3 x 128 x 352
+            # rots: 4 x 5 x 3 x 3]
+            # trans: 4 x 5 x 3
+            # intrins: 4 x 5 x 3 x 3
+            # post_rots: 4 x 5 x 3 x 3
+            # post_trans: 4 x 5 x 3
+            # binimgs: 4 x 1 x 200 x 200
+
             t0 = time()
             opt.zero_grad()
             preds = model(imgs.to(device),
-                    rots.to(device),
-                    trans.to(device),
-                    intrins.to(device),
-                    post_rots.to(device),
-                    post_trans.to(device),
-                    )
+                          rots.to(device),
+                          trans.to(device),
+                          intrins.to(device),
+                          post_rots.to(device),
+                          post_trans.to(device),
+                          )
             binimgs = binimgs.to(device)
             loss = loss_fn(preds, binimgs)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(), max_grad_norm)  # 梯度裁剪
             opt.step()
             counter += 1
             t1 = time()
 
             if counter % 10 == 0:
                 print(counter, loss.item())
+                # 每10个iter记录一次loss
                 writer.add_scalar('train/loss', loss, counter)
 
-            if counter % 50 == 0:
+            if counter % 50 == 0:  # 每50个iter记录一次iou
                 _, _, iou = get_batch_iou(preds, binimgs)
                 writer.add_scalar('train/iou', iou, counter)
                 writer.add_scalar('train/epoch', epoch, counter)
                 writer.add_scalar('train/step_time', t1 - t0, counter)
 
-            if counter % val_step == 0:
+            if counter % val_step == 0:  # 验证一次，记录loss和iou
                 val_info = get_val_info(model, valloader, loss_fn, device)
                 print('VAL', val_info)
                 writer.add_scalar('val/loss', val_info['loss'], counter)
                 writer.add_scalar('val/iou', val_info['iou'], counter)
 
-            if counter % val_step == 0:
+            if counter % val_step == 0:  # 保存模型
                 model.eval()
                 mname = os.path.join(logdir, "model{}.pt".format(counter))
                 print('saving', mname)
